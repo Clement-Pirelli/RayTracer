@@ -1,14 +1,7 @@
 #include <cmath>
-#include <fstream>
-#include <chrono>
-#include <iostream>
-#include <string>
 
 //CONSTANTS
 const double RENDER_DISTANCE = 9999.0;
-
-#define SAFETY_CLAMP_IMG
-
 
 static inline double mix(double a, double b, double t)
 {
@@ -147,71 +140,7 @@ struct intersection
 
 };
 
-const intersection intersection::MISS = intersection(RENDER_DISTANCE, vec3(.0), vec3(.0), material(.0));
-
-struct image
-{
-	unsigned int width;
-	unsigned int height;
-	unsigned char *img;
-
-	image(unsigned int givenWidth, unsigned int givenHeight) : width(givenWidth), height(givenHeight) 
-	{
-		img = new unsigned char[3 * width*height];
-	}
-	~image()
-	{
-		delete[] img;
-	}
-	void writeToPixel(unsigned int x, unsigned int y, vec3 val)
-	{
-
-#ifdef SAFETY_CLAMP_IMG
-		val = clamp(val, .0, 255.0);
-#endif // SAFETY_CLAMP_IMG
-		
-		img[(x + y * width) * 3 + 2] = (unsigned char)(val.r);
-		img[(x + y * width) * 3 + 1] = (unsigned char)(val.g);
-		img[(x + y * width) * 3 + 0] = (unsigned char)(val.b);
-	}
-
-	//original code from https://stackoverflow.com/a/2654860
-	void writeDataAt(const char * path)
-	{
-		FILE *f;
-		int filesize = 54 + 3 * width*height;  //w is your image width, h is image height, both int
-
-		unsigned char bmpfileheader[14] = { 'B','M', 0,0,0,0, 0,0, 0,0, 54,0,0,0 };
-		unsigned char bmpinfoheader[40] = { 40,0,0,0, 0,0,0,0, 0,0,0,0, 1,0, 24,0 };
-		unsigned char bmppad[3] = { 0,0,0 };
-
-		bmpfileheader[2] = (unsigned char)(filesize);
-		bmpfileheader[3] = (unsigned char)(filesize >> 8);
-		bmpfileheader[4] = (unsigned char)(filesize >> 16);
-		bmpfileheader[5] = (unsigned char)(filesize >> 24);
-
-		bmpinfoheader[4] = (unsigned char)(width);
-		bmpinfoheader[5] = (unsigned char)(width >> 8);
-		bmpinfoheader[6] = (unsigned char)(width >> 16);
-		bmpinfoheader[7] = (unsigned char)(width >> 24);
-		bmpinfoheader[8] = (unsigned char)(height);
-		bmpinfoheader[9] = (unsigned char)(height >> 8);
-		bmpinfoheader[10] = (unsigned char)(height >> 16);
-		bmpinfoheader[11] = (unsigned char)(height >> 24);
-
-		fopen_s(&f, path, "wb");
-		fwrite(bmpfileheader, 1, 14, f);
-		fwrite(bmpinfoheader, 1, 40, f);
-		for (unsigned int i = 0; i < height; i++)
-		{
-			fwrite(img + (width*(height - i - 1) * 3), 3, width, f);
-			fwrite(bmppad, 1, (4 - (width * 3) % 4) % 4, f);
-		}
-
-		free(img);
-		fclose(f);
-	}
-};
+const intersection intersection::MISS = intersection(RENDER_DISTANCE, vec3(22.0), vec3(.0), material(.0));
 
 static inline intersection mix(intersection a, intersection b, double t)
 {
@@ -240,91 +169,239 @@ static inline intersection intersect(ray &pRay, sphere &pSphere)
 	return mix(intersection::MISS, hit, (double)(t < .0));
 }
 
-const double ambientLight = .0;
+static inline bool shadowIntersect(ray &pRay, sphere &pSphere, vec3 &lightPos)
+{
+	double radius2 = pSphere.radius*pSphere.radius;
+	vec3 L = pSphere.origin - pRay.origin;
+	double tca = vec3::dot(L, pRay.direction);
+	double d2 = vec3::dot(L, L) - tca * tca;
+	if (d2 > radius2) return false;
+	double thc = sqrt(radius2 - d2);
+	double t0 = tca - thc;
+	double t1 = tca + thc;
+	double t = min(t0, t1);
+
+	return (t < .00001) && (t < vec3::magnitude(pRay.origin - lightPos));
+}
+
+
+//base code provided Tommi Lipponen
+#define WIN32_LEAN_AND_MEAN 1
+#include <Windows.h>
+#include <stdio.h>
+
+struct RenderTarget {
+	HDC device_;
+	int width_;
+	int height_;
+	unsigned* data_;
+	BITMAPINFO info_;
+
+	RenderTarget(HDC device, int width, int height)
+		: device_(device), width_(width), height_(height), data_(nullptr)
+	{
+		data_ = new unsigned[width*height];
+		info_.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		info_.bmiHeader.biWidth = width_;
+		info_.bmiHeader.biHeight = -height_;
+		info_.bmiHeader.biPlanes = 1;
+		info_.bmiHeader.biBitCount = 32;
+		info_.bmiHeader.biCompression = BI_RGB;
+	}
+	~RenderTarget() { delete[] data_; }
+	inline int  size() const {
+		return width_ * height_;
+	}
+	void clear(unsigned color) {
+		const int count = size();
+		for (int i = 0; i < count; i++) {
+			data_[i] = color;
+		}
+	}
+	inline void pixel(int x, int y, unsigned color) {
+		if (y < 0 || y >= width_) { return; }
+		if (x < 0 || x >= height_) { return; }
+		data_[y*width_ + x] = color;
+	}
+	void present() {
+		StretchDIBits(device_,
+			0, 0, width_, height_,
+			0, 0, width_, height_,
+			data_, &info_,
+			DIB_RGB_COLORS, SRCCOPY);
+	}
+};
+
+static unsigned
+make_color(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha)
+{
+	unsigned result = 0;
+	if (alpha > 0)
+	{
+		result |= ((unsigned)red << 16);
+		result |= ((unsigned)green << 8);
+		result |= ((unsigned)blue << 0);
+		result |= ((unsigned)alpha << 24);
+	}
+	return result;
+}
+
+static unsigned long long
+get_ticks64()
+{
+	static LARGE_INTEGER start = {};
+	static unsigned long long factor = 0;
+	if (!factor)
+	{
+		LARGE_INTEGER frequency = {};
+		QueryPerformanceFrequency(&frequency);
+		factor = frequency.QuadPart / 1000000;
+		QueryPerformanceCounter(&start);
+	}
+	LARGE_INTEGER now = {};
+	QueryPerformanceCounter(&now);
+	auto diff = now.QuadPart - start.QuadPart;
+	return (diff / factor);
+}
+
+static LRESULT CALLBACK
+Win32DefaultProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+	switch (message) {
+	case WM_CLOSE: { PostQuitMessage(0); } break;
+	default: { return DefWindowProcA(window, message, wparam, lparam); } break;
+	}
+	return 0;
+}
+
+const double ambientLight = .2;
 const unsigned int sphereCount = 2;
+const unsigned int lightCount = 2;
 const unsigned int maxBounces = 100;
 
 
-int main()
+static inline vec3 calcLighting(ray pRay, pointLight *pLights, sphere *pSpheres)
 {
-	//screen params
-	const unsigned int SCREEN_WIDTH = 1000;
-	const unsigned int SCREEN_HEIGHT = 1000;
+	vec3 finalColor = vec3(.0);
+	intersection finalIntersection = intersection::MISS;
+	for (unsigned int lightIndex = 0; lightIndex < lightCount; lightIndex++)
+	{
+		//for every sphere
+		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
+		{
+			intersection currentIntersection = intersect(pRay, pSpheres[sphereIndex]);
+			finalIntersection = mix(finalIntersection, currentIntersection, (double)(currentIntersection.dist < finalIntersection.dist));
+		}
+		vec3 intersectionPoint = pRay.origin + pRay.direction * finalIntersection.dist;
+		vec3 lightDir = pLights[lightIndex].origin - intersectionPoint;
+		double lightDistance = vec3::magnitude(lightDir);
+		double lightIntensity = pLights[lightIndex].intensity / (lightDistance*lightDistance);
+		double diffuseTerm = clamp(vec3::dot(lightDir / lightDistance, finalIntersection.normal), .0, 1.0) * finalIntersection.mat.diff;
 
-	std::chrono::milliseconds time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
 
-	image img(SCREEN_WIDTH, SCREEN_HEIGHT);
+		vec3 reflection = finalIntersection.normal * 2.0 * vec3::dot(finalIntersection.normal, lightDir) - lightDir;
+		//specular term
+		//Thanks to UglySwedishFish#3207 on discord for their help with this :
+		//dot products range from -1 to 1, so the dot product of the reflection and the ray's direction
+		//has to be clamped so that a negative value doesn't get squared into a positive value
+		const double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), pRay.direction), .0, 1.0), finalIntersection.mat.gloss) * finalIntersection.mat.spec;
+
+		double lightObscured = .0;
+		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
+		{
+			ray shadowRay = ray(intersectionPoint, pLights[lightIndex].origin - intersectionPoint);
+			lightObscured = (double)shadowIntersect(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin);
+		}
+
+		finalColor += clamp(finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*lightObscured + ambientLight), .0, 255.0);
+	}
+
+	finalColor = clamp(finalColor, .0, 255.0);
+	//add background color
+	finalColor = mix(finalColor, intersection::MISS.color, (finalIntersection.dist == intersection::MISS.dist));
+
+	return finalColor;
+}
+
+
+int CALLBACK
+WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCode) {
+	const char* window_title = "MinimalWindowPixelOnScreen";
 
 	sphere spheres[sphereCount]
 	{
-		sphere(vec3(-.5, -.4, 10.0), vec3(.0, .0, 255.0), .6, material(.9, .1, 64.0)),
+		sphere(vec3(-.5, -.4, 4.0), vec3(.0, .0, 255.0), .6, material(.9, .1, 64.0)),
 		sphere(vec3(1.0, .5, 13.0), vec3(255.0, .0, 255.0), 1.0, material(.5, .9, 8.0))
 	};
 
-	pointLight l(vec3(.0, 7.0, 0.0), 200.0);
-	
-	//for every pixel
-	for (size_t y = 0; y < SCREEN_WIDTH; y++)
+	pointLight lights[lightCount]
 	{
-		for (size_t x = 0; x < SCREEN_HEIGHT; x++)
-		{
-			double u =  -.5 + (double)x / (double)SCREEN_WIDTH;
-			double v =  -.5 + (double)y / (double)SCREEN_HEIGHT;
-
-			intersection finalIntersection = intersection::MISS;
-
-			//send ray through the scene
-			ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u,v,-1.0)));
-			
-
-			vec3 finalColor = vec3(.0);
-			//for every sphere
-			for(unsigned int i = 0; i < sphereCount; i++)
-			{
-				intersection currentIntersection = intersect(currentRay, spheres[i]);
-				finalIntersection = mix(finalIntersection, currentIntersection, (double)(currentIntersection.dist < finalIntersection.dist));
-			}
-
-			vec3 color = vec3(.0);
-			vec3 intersectionPoint = currentRay.origin + currentRay.direction * finalIntersection.dist;
-			vec3 lightDir = l.origin - intersectionPoint;
-			double distance = vec3::magnitude(lightDir);
-			double lightIntensity = l.intensity / (distance*distance);
-			double diffuseTerm = clamp(vec3::dot(lightDir/distance, finalIntersection.normal), .0, 1.0) * finalIntersection.mat.diff;
+		pointLight(vec3(6.0, 6.0, .0), 100.0),
+		pointLight(vec3(7.0, -7.0, 5.0), 30.0)
+	};
 
 
-			vec3 reflection = finalIntersection.normal * 2.0 * vec3::dot(finalIntersection.normal, lightDir) - lightDir;
-
-			//specular term
-			//Thanks to UglySwedishFish#3207 on discord for their help with this :
-			//dot products range from -1 to 1, so the dot product of the reflection and the ray's direction
-			//has to be clamped so that a negative value doesn't get squared into a positive value
-			double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), currentRay.direction), .0, 1.0), finalIntersection.mat.gloss) * finalIntersection.mat.spec;
-			color += clamp(finalIntersection.color * lightIntensity * (diffuseTerm + specularTerm + ambientLight), .0, 255.0);
-			finalColor += color;
-			
-			//lights' aura
-			{
-				//distance from the ray's origin to the light's origin
-				double distanceToLightOrigin = vec3::magnitude(l.origin - currentRay.origin);
-			
-				//projection of the ray on the light, aka the point on the ray which is the closest to the light's origin
-				vec3 rayProjection = currentRay.origin + currentRay.direction * distanceToLightOrigin;
-			
-				finalColor += l.intensity / (vec3::magnitude(l.origin - rayProjection)*255.0);
-			}
-			
-			img.writeToPixel(x, y, finalColor);
+	const int window_width = 1000;
+	const int window_height = 1000;
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+	wc.lpfnWndProc = Win32DefaultProc;
+	wc.hInstance = hInstance;
+	wc.hCursor = LoadCursor(0, IDC_ARROW);
+	wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+	wc.lpszClassName = "minimalWindowClass";
+	if (!RegisterClassExA(&wc)) { return -1; }
+	DWORD window_style = (WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX));
+	RECT rc = { 0, 0, window_width, window_height };
+	if (!AdjustWindowRect(&rc, window_style, FALSE)) { return -2; }
+	HWND window_handle = CreateWindowExA(0, wc.lpszClassName,
+		window_title, window_style, CW_USEDEFAULT, CW_USEDEFAULT,
+		rc.right - rc.left, rc.bottom - rc.top, 0, 0, hInstance, NULL);
+	if (!window_handle) { return 0; }
+	ShowWindow(window_handle, nShowCode);
+	HDC device = GetDC(window_handle);
+	RenderTarget rendertarget(device, window_width, window_height);
+	auto prev = get_ticks64();
+	while (true) 
+	{
+		MSG msg = {};
+		while (PeekMessage(&msg, 0, 0, 0, PM_REMOVE)) {
+			if (msg.message == WM_QUIT) { return 0; }
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
 		}
-	}
-	time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()) - time;
-	std::cout << "Raytracing done in : " << time.count() << " milliseconds\n";
 
-	std::string filename = "spheres_" + std::to_string(time.count()) + ".bmp";
-	img.writeDataAt(filename.c_str());
-	
-	int input = 0;
-	std::cin >> input;
+		auto curr = get_ticks64();
+		rendertarget.clear(make_color(0x00, 0x00, 0x00, 0xff));
+
+		{
+			auto diff = curr - prev;
+			prev = curr;
+
+			char title[256] = {};
+			sprintf_s(title, sizeof(title), "%s [%dus]", window_title, (int)(diff));
+			SetWindowTextA(window_handle, title);
+		}
+
+		//for every pixel
+		for (size_t y = 0; y < window_width; y++)
+		{
+			for (size_t x = 0; x < window_height; x++)
+			{
+				const double u = -.5 + (double)x / (double)window_width;
+				const double v = -.5 + (double)y / (double)window_height;
+
+				//send ray through the scene
+				ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u, v, -1.0)));
+
+				vec3 col = calcLighting(currentRay, lights, spheres);
+				
+				rendertarget.pixel(x, y, make_color(col.r, col.g, col.b, 0xff));
+			}
+		}
+		rendertarget.present();
+	}
+
 
 	return 0;
 }
