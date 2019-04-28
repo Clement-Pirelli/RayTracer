@@ -169,7 +169,7 @@ static inline intersection intersect(ray &pRay, sphere &pSphere)
 	return mix(intersection::MISS, hit, (double)(t < .0));
 }
 
-static inline bool shadowIntersect(ray &pRay, sphere &pSphere, vec3 &lightPos)
+static inline bool getInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos)
 {
 	double radius2 = pSphere.radius*pSphere.radius;
 	vec3 L = pSphere.origin - pRay.origin;
@@ -181,7 +181,7 @@ static inline bool shadowIntersect(ray &pRay, sphere &pSphere, vec3 &lightPos)
 	double t1 = tca + thc;
 	double t = min(t0, t1);
 
-	return (t < .00001) && (t < vec3::magnitude(pRay.origin - lightPos));
+	return (t > .00001) && (t < vec3::magnitude(pRay.origin - lightPos));
 }
 
 
@@ -273,7 +273,7 @@ Win32DefaultProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
 	return 0;
 }
 
-const double ambientLight = .2;
+const double ambientLight = .0;
 const unsigned int sphereCount = 2;
 const unsigned int lightCount = 2;
 const unsigned int maxBounces = 100;
@@ -305,14 +305,14 @@ static inline vec3 calcLighting(ray pRay, pointLight *pLights, sphere *pSpheres)
 		//has to be clamped so that a negative value doesn't get squared into a positive value
 		const double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), pRay.direction), .0, 1.0), finalIntersection.mat.gloss) * finalIntersection.mat.spec;
 
-		double lightObscured = .0;
+		bool inShadow = false;
 		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
 		{
-			ray shadowRay = ray(intersectionPoint, pLights[lightIndex].origin - intersectionPoint);
-			lightObscured = (double)shadowIntersect(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin);
+			ray shadowRay = ray(intersectionPoint, vec3::normalize(pLights[lightIndex].origin - intersectionPoint));
+			inShadow = inShadow || getInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin);
 		}
 
-		finalColor += clamp(finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*lightObscured + ambientLight), .0, 255.0);
+		finalColor += finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*(double)(!inShadow) + ambientLight);
 	}
 
 	finalColor = clamp(finalColor, .0, 255.0);
@@ -329,19 +329,21 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 
 	sphere spheres[sphereCount]
 	{
-		sphere(vec3(-.5, -.4, 4.0), vec3(.0, .0, 255.0), .6, material(.9, .1, 64.0)),
-		sphere(vec3(1.0, .5, 13.0), vec3(255.0, .0, 255.0), 1.0, material(.5, .9, 8.0))
+		sphere(vec3(.0, .0, 4.0), vec3(.0, .0, 255.0), .6, material(.9, .1, 64.0)),
+		sphere(vec3(.0, .0, -1.0), vec3(255.0, .0, 255.0), .1, material(.5, .9, 8.0))
 	};
 
 	pointLight lights[lightCount]
 	{
-		pointLight(vec3(6.0, 6.0, .0), 100.0),
-		pointLight(vec3(7.0, -7.0, 5.0), 30.0)
+		pointLight(vec3(.0, .0, -6.0), 100.0),
+		pointLight(vec3(1.0, 1.0, .0), 10.0)
 	};
 
 
 	const int window_width = 1000;
 	const int window_height = 1000;
+
+
 	WNDCLASSEXA wc = {};
 	wc.cbSize = sizeof(wc);
 	wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
