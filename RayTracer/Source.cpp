@@ -153,23 +153,7 @@ static inline intersection mix(intersection a, intersection b, double t)
 	);
 }
 
-static inline intersection intersect(ray &pRay, sphere &pSphere)
-{
-	double radius2 = pSphere.radius*pSphere.radius;
-	vec3 L = pSphere.origin - pRay.origin;
-	double tca = vec3::dot(L, pRay.direction);
-	double d2 = vec3::dot(L, L) - tca * tca;
-	if (d2 > radius2) return intersection::MISS;
-	double thc = sqrt(radius2 - d2);
-	double t0 = tca - thc;
-	double t1 = tca + thc;
-	double t = min(t0, t1);
-
-	intersection hit = intersection(t, pSphere.color, (pSphere.origin - (pRay.origin + pRay.direction*t)) / pSphere.radius, pSphere.mat);
-	return mix(intersection::MISS, hit, (double)(t < .0));
-}
-
-static inline bool getInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos)
+static inline double rayCast(ray &pRay, sphere &pSphere)
 {
 	double radius2 = pSphere.radius*pSphere.radius;
 	vec3 L = pSphere.origin - pRay.origin;
@@ -180,10 +164,22 @@ static inline bool getInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos)
 	double t0 = tca - thc;
 	double t1 = tca + thc;
 	double t = min(t0, t1);
-
-	return (t > .00001) && (t < vec3::magnitude(pRay.origin - lightPos));
+	return t;
 }
 
+static inline intersection intersect(ray &pRay, sphere &pSphere)
+{
+	double t = rayCast(pRay, pSphere);
+	intersection hit = intersection(t, pSphere.color, (pSphere.origin - (pRay.origin + pRay.direction*t)) / pSphere.radius, pSphere.mat);
+	return mix(intersection::MISS, hit, (double)(t < .0));
+}
+
+
+static inline bool isInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos, double minDistance)
+{
+	double t = rayCast(pRay, pSphere);
+	return (t > minDistance) && (t < vec3::magnitude(pRay.origin - lightPos));
+}
 
 //base code provided Tommi Lipponen
 #define WIN32_LEAN_AND_MEAN 1
@@ -309,7 +305,7 @@ static inline vec3 calcLighting(ray pRay, pointLight *pLights, sphere *pSpheres)
 		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
 		{
 			ray shadowRay = ray(intersectionPoint, vec3::normalize(pLights[lightIndex].origin - intersectionPoint));
-			inShadow = inShadow || getInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin);
+			inShadow = inShadow || isInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin, .00001);
 		}
 
 		finalColor += finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*(double)(!inShadow) + ambientLight);
