@@ -171,8 +171,7 @@ static inline double rayCast(ray &pRay, sphere &pSphere)
 	double thc = sqrt(radius2 - d2);
 	double t0 = tca - thc;
 	double t1 = tca + thc;
-	double t = min(t0, t1);
-	return t;
+	return min(t0, t1);
 }
 
 static inline intersection intersect(ray &pRay, sphere &pSphere)
@@ -185,7 +184,7 @@ static inline intersection intersect(ray &pRay, sphere &pSphere)
 static inline bool isInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos, double minDistance)
 {
 	double t = rayCast(pRay, pSphere);
-	return (t > minDistance) && (t < vec3::magnitude(pRay.origin - lightPos));
+	return (t > minDistance) && (t < vec3::magnitude(lightPos - pRay.origin));
 }
 
 //base code provided Tommi Lipponen
@@ -277,7 +276,7 @@ Win32DefaultProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
 const double ambientLight = .0;
 const unsigned int sphereCount = 3;
 const unsigned int lightCount = 2;
-const unsigned int maxBounces = 100;
+const unsigned int maxBounces = 10;
 
 static inline intersection bounce(ray &pRay, vec3 &outColor, pointLight *pLights, sphere *pSpheres)
 {
@@ -350,15 +349,15 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 
 	sphere spheres[sphereCount]
 	{
-		sphere(vec3(.0, .5, -2.0),		vec3(255.0, 255.0, 255.0),	.4,	material(1., .0, 64.0, .2, 1.0)),
-		sphere(vec3(.3, -.6, -2.1),		vec3(255.0, .0, 255.0),		.4,	material(.5, .5, 8.0, .1, 1.0)),
-		sphere(vec3(-.2, -.4, -2.1),	vec3(20.0, 200.0, 20.0),	.1,	material(.1, .9, 8.0, .1, 1.0))
+		sphere(vec3(.0, .5, 2.0),		vec3(255.0, 255.0, 255.0),	.4,	material(1., .0, 64.0, .0, 1.0)),
+		sphere(vec3(.3, -.6, 2.1),		vec3(255.0, .0, 255.0),		.4,	material(1., .0, 8.0, .0, 1.0)),
+		sphere(vec3(-.2, -.4,1.1),		vec3(20.0, 200.0, 20.0),	.2,	material(.9, .1, 8.0, .1, 1.0))
 	};
 
 	pointLight lights[lightCount]
 	{
-		pointLight(vec3(.0, .0, -10.0), 40.0),
-		pointLight(vec3(1.0, 1.0, .0), 10.0)
+		pointLight(vec3(.0, .0, 2.0), 1.0),
+		pointLight(vec3(1.0, .0,1.0), 7.0)
 	};
 
 
@@ -408,15 +407,17 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 		}
 
 		//for every pixel
-		for (size_t y = 0; y < window_width; y++)
+		const double width = (double)window_width;
+		const double height = (double)window_height;
+		for (double y = 0.0; y < height; y+=1.0)
 		{
-			for (size_t x = 0; x < window_height; x++)
+			for (double x = 0; x < width; x+=1.0)
 			{
-				const double u = -.5 + (double)x / (double)window_width;
-				const double v = -.5 + (double)y / (double)window_height;
+				const double u = -.5 + x / width;
+				const double v = -.5 + y / height;
 
 				//send ray through the scene
-				ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u, v, -1.0)));
+				ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u, v, 1.0)));
 
 				vec3 col = calcLighting(currentRay, lights, spheres);
 				
@@ -425,7 +426,6 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 		}
 		rendertarget.present();
 	}
-
 
 	return 0;
 }
