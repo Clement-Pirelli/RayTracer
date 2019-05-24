@@ -4,6 +4,8 @@
 const double RENDER_DISTANCE = 9999.0;
 const double SMALLEST_DISTANCE = .000001;
 
+#pragma region SCALAR OPERATIONS
+
 static inline double mix(double a, double b, double t)
 {
 	return a * (1.0 - t) + b * t;
@@ -26,6 +28,10 @@ static inline double clamp(double giventerm, double givenmin, double givenmax)
 
 	return giventerm;
 }
+
+#pragma endregion
+
+#pragma region VECTOR3
 
 union vec3
 {
@@ -74,8 +80,12 @@ static inline vec3 mix(vec3 a, vec3 b, double t)
 
 static inline vec3 reflect(vec3 incident, vec3 normal)
 {
-	return incident - normal * 2.0 * vec3::dot(normal, incident);
+	return vec3::normalize(incident - normal * 2.0 * vec3::dot(normal, incident));
 }
+
+#pragma endregion
+
+#pragma region STRUCTS
 
 //ray data, used to get the pixel color by sending (or casting) a ray per pixel into the scene
 struct ray
@@ -92,15 +102,16 @@ struct material
 	double spec;
 	double gloss;
 	double reflect;
+	double opac;
 	double refract;
 
-	material(double givenParams) { diff = spec = gloss = reflect = refract = givenParams; }
-	material(double givenDiff, double givenSpec, double givenGloss, double givenReflect, double givenRefract) : diff(givenDiff), spec(givenSpec), gloss(givenGloss), reflect(givenReflect), refract(givenRefract){}
+	material(double givenParams) { diff = spec = gloss = reflect = opac = refract = givenParams; }
+	material(double givenDiff, double givenSpec, double givenGloss, double givenReflect, double givenOpac, double givenRefract) : diff(givenDiff), spec(givenSpec), gloss(givenGloss), reflect(givenReflect), opac(givenOpac), refract(givenRefract){}
 };
 
 static inline material mix(material a, material b, double t)
 {
-	return material(mix(a.diff, b.diff, t), mix(a.spec, b.spec, t), mix(a.gloss, b.gloss, t), mix(a.reflect, b.reflect, t), mix(a.refract, b.refract, t));
+	return material(mix(a.diff, b.diff, t), mix(a.spec, b.spec, t), mix(a.gloss, b.gloss, t), mix(a.reflect, b.reflect, t), mix(a.opac, b.opac, t), mix(a.refract, b.refract, t));
 }
 
 //one-color sphere
@@ -161,13 +172,22 @@ static inline intersection mix(intersection a, intersection b, double t)
 	);
 }
 
-static inline double rayCast(ray &pRay, sphere &pSphere)
+#pragma endregion
+
+#pragma region RAYTRACING
+
+const unsigned int sphereCount = 3;
+const unsigned int lightCount = 2;
+const double ambientLight = .01;
+const unsigned int maxBounces = 4;
+
+static inline double rayTrace(ray &pRay, sphere &pSphere)
 {
 	double radius2 = pSphere.radius*pSphere.radius;
 	vec3 L = pSphere.origin - pRay.origin;
 	double tca = vec3::dot(L, pRay.direction);
 	double d2 = vec3::dot(L, L) - tca * tca;
-	if (d2 > radius2) return false;
+	if (d2 > radius2) return intersection::MISS.dist;
 	double thc = sqrt(radius2 - d2);
 	double t0 = tca - thc;
 	double t1 = tca + thc;
@@ -176,16 +196,86 @@ static inline double rayCast(ray &pRay, sphere &pSphere)
 
 static inline intersection intersect(ray &pRay, sphere &pSphere)
 {
-	double t = rayCast(pRay, pSphere);
+	double t = rayTrace(pRay, pSphere);
 	intersection hit = intersection(t, pSphere.color, (pSphere.origin - (pRay.origin + pRay.direction*t)) / pSphere.radius, pSphere.mat);
 	return mix(intersection::MISS, hit, (double)(t > SMALLEST_DISTANCE));
 }
 
 static inline bool isInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos, double minDistance)
 {
-	double t = rayCast(pRay, pSphere);
+	double t = rayTrace(pRay, pSphere);
 	return (t > minDistance) && (t < vec3::magnitude(lightPos - pRay.origin));
 }
+
+static inline intersection bounce(ray &pRay, vec3 &outColor, pointLight *pLights, sphere *pSpheres)
+{
+	vec3 finalColor = vec3(.0);
+	intersection finalIntersection = intersection::MISS;
+	//for every sphere
+	for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
+	{
+		intersection currentIntersection = intersect(pRay, pSpheres[sphereIndex]);
+		finalIntersection = mix(finalIntersection, currentIntersection, (double)(currentIntersection.dist < finalIntersection.dist));
+	}
+	vec3 intersectionPoint = pRay.origin + pRay.direction * finalIntersection.dist;
+
+	for (unsigned int lightIndex = 0; lightIndex < lightCount; lightIndex++)
+	{
+		
+		vec3 lightDir = intersectionPoint - pLights[lightIndex].origin;
+		double lightDistance = vec3::magnitude(lightDir);
+		double lightIntensity = pLights[lightIndex].intensity / (lightDistance*lightDistance);
+		double diffuseTerm = clamp(vec3::dot(lightDir / lightDistance, finalIntersection.normal), .0, 1.0) * finalIntersection.mat.diff;
+
+
+		vec3 reflection = reflect(lightDir, finalIntersection.normal);
+		//specular term
+		//Thanks to UglySwedishFish#3207 on discord for their help with this :
+		//dot products range from -1 to 1, so the dot product of the reflection and the ray's direction
+		//has to be clamped so that a negative value doesn't get squared into a positive value
+		const double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), pRay.direction), .0, 1.0), finalIntersection.mat.gloss) * finalIntersection.mat.spec;
+
+		bool inShadow = false;
+		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
+		{
+			ray shadowRay = ray(intersectionPoint, vec3::normalize(pLights[lightIndex].origin - intersectionPoint));
+			inShadow = inShadow || isInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin, .00001);
+		}
+		finalColor += finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*(double)(!inShadow) + ambientLight);
+	}
+
+	finalColor = clamp(finalColor, .0, 255.0);
+	//add background color
+	finalColor = mix(finalColor, intersection::MISS.color, (finalIntersection.dist == intersection::MISS.dist));
+	outColor = finalColor;
+	pRay.origin = pRay.origin + pRay.direction * finalIntersection.dist;
+	pRay.direction = reflect(pRay.direction, finalIntersection.normal);
+	return finalIntersection;
+}
+
+static inline vec3 traceScene(ray pRay, pointLight *pLights, sphere *pSpheres)
+{
+	vec3 finalColor = vec3(.0);
+	double reflectance = 1.0;
+	bool bounceMissed = false;
+	unsigned int bounceIndex = 1;
+	while (!bounceMissed && bounceIndex <= maxBounces)
+	{
+		vec3 bounceColor = vec3(.0);
+		intersection bounceIntersection = bounce(pRay, bounceColor, pLights, pSpheres);
+		bounceColor *= reflectance;
+		finalColor += clamp(bounceColor, .0, 255.0);
+
+		reflectance -= 1.0 - bounceIntersection.mat.reflect;
+		bounceIndex++;
+		bounceMissed = bounceMissed || (bounceIntersection.dist == intersection::MISS.dist);
+	}
+	return clamp(finalColor, .0, 255.0);
+}
+
+#pragma endregion
+
+#pragma region WINDOW DISPLAY
 
 //base code provided Tommi Lipponen
 #define WIN32_LEAN_AND_MEAN 1
@@ -273,74 +363,7 @@ Win32DefaultProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
 	return 0;
 }
 
-const double ambientLight = .0;
-const unsigned int sphereCount = 3;
-const unsigned int lightCount = 2;
-const unsigned int maxBounces = 10;
-
-static inline intersection bounce(ray &pRay, vec3 &outColor, pointLight *pLights, sphere *pSpheres)
-{
-	vec3 finalColor = vec3(.0);
-	intersection finalIntersection = intersection::MISS;
-	for (unsigned int lightIndex = 0; lightIndex < lightCount; lightIndex++)
-	{
-		//for every sphere
-		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
-		{
-			intersection currentIntersection = intersect(pRay, pSpheres[sphereIndex]);
-			finalIntersection = mix(finalIntersection, currentIntersection, (double)(currentIntersection.dist < finalIntersection.dist));
-		}
-		vec3 intersectionPoint = pRay.origin + pRay.direction * finalIntersection.dist;
-		vec3 lightDir = pLights[lightIndex].origin - intersectionPoint;
-		double lightDistance = vec3::magnitude(lightDir);
-		double lightIntensity = pLights[lightIndex].intensity / (lightDistance*lightDistance);
-		double diffuseTerm = clamp(vec3::dot(lightDir / lightDistance, finalIntersection.normal), .0, 1.0) * finalIntersection.mat.diff;
-
-
-		vec3 reflection = reflect(lightDir, finalIntersection.normal);
-		//specular term
-		//Thanks to UglySwedishFish#3207 on discord for their help with this :
-		//dot products range from -1 to 1, so the dot product of the reflection and the ray's direction
-		//has to be clamped so that a negative value doesn't get squared into a positive value
-		const double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), pRay.direction), .0, 1.0), finalIntersection.mat.gloss) * finalIntersection.mat.spec;
-
-		bool inShadow = false;
-		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
-		{
-			ray shadowRay = ray(intersectionPoint, vec3::normalize(pLights[lightIndex].origin - intersectionPoint));
-			inShadow = inShadow || isInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin, .00001);
-		}
-		finalColor += finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*(double)(!inShadow) + ambientLight);
-	}
-
-	finalColor = clamp(finalColor, .0, 255.0);
-	//add background color
-	finalColor = mix(finalColor, intersection::MISS.color, (finalIntersection.dist == intersection::MISS.dist));
-	outColor = finalColor;
-	pRay.origin = pRay.origin + pRay.direction * finalIntersection.dist;
-	pRay.direction = reflect(pRay.direction, finalIntersection.normal);
-	return finalIntersection;
-}
-
-static inline vec3 calcLighting(ray pRay, pointLight *pLights, sphere *pSpheres)
-{
-	vec3 finalColor = vec3(.0);
-	double reflectance = 1.0;
-	bool bounceMissed = false;
-	unsigned int bounceIndex = 1;
-	while(!bounceMissed && bounceIndex <= maxBounces)
-	{
-		vec3 bounceColor = vec3(.0);
-		intersection bounceIntersection = bounce(pRay, bounceColor, pLights, pSpheres);
-		bounceColor *= reflectance;
-		finalColor += clamp(bounceColor, .0, 255.0);
-		
-		reflectance -= 1.0 - bounceIntersection.mat.reflect;
-		bounceIndex++;
-		bounceMissed = bounceMissed || (bounceIntersection.dist == intersection::MISS.dist);
-	}
-	return clamp(finalColor, .0, 255.0);
-}
+#pragma endregion
 
 
 int CALLBACK
@@ -349,20 +372,20 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 
 	sphere spheres[sphereCount]
 	{
-		sphere(vec3(.0, .5, 2.0),		vec3(255.0, 255.0, 255.0),	.4,	material(1., .0, 64.0, .0, 1.0)),
-		sphere(vec3(.3, -.6, 2.1),		vec3(255.0, .0, 255.0),		.4,	material(1., .0, 8.0, .0, 1.0)),
-		sphere(vec3(-.2, -.4,1.1),		vec3(20.0, 200.0, 20.0),	.2,	material(.9, .1, 8.0, .1, 1.0))
+		sphere(vec3(.0, .5, 2.0),		vec3(255.0, 255.0, 255.0),	.4,	material(.4, .6, 64.0, .3, 1.0, 1.0)),
+		sphere(vec3(-.3, -.4, 2.1),		vec3(255.0, .0, 255.0),		.3,	material(1., .0, 8.0, 1.0, 1.0, 1.0)),
+		sphere(vec3(.3, -.4,2.1),		vec3(20.0, 200.0, 20.0),	.3,	material(.9, .1, 8.0, 1.0, 1.0, 1.0))
 	};
 
 	pointLight lights[lightCount]
 	{
-		pointLight(vec3(.0, .0, 2.0), 1.0),
-		pointLight(vec3(1.0, .0,1.0), 7.0)
+		pointLight(vec3(1.0, .0, .0), 1.5),
+		pointLight(vec3(1.0, .0,1.0), 1.0)
 	};
 
 
-	const int window_width = 1000;
-	const int window_height = 1000;
+	const int window_width = 1024;
+	const int window_height = 1024;
 
 
 	WNDCLASSEXA wc = {};
@@ -419,7 +442,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 				//send ray through the scene
 				ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u, v, 1.0)));
 
-				vec3 col = calcLighting(currentRay, lights, spheres);
+				vec3 col = traceScene(currentRay, lights, spheres);
 				
 				rendertarget.pixel(x, y, make_color(col.r, col.g, col.b, 0xff));
 			}
