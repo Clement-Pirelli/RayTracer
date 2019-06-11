@@ -1,4 +1,5 @@
 #include <cmath>
+#include <thread>
 
 //CONSTANTS
 const double RENDER_DISTANCE = 9999.0;
@@ -6,23 +7,18 @@ const double SMALLEST_DISTANCE = .000001;
 
 #pragma region SCALAR OPERATIONS
 
-static inline double mix(double a, double b, double t)
-{
-	return a * (1.0 - t) + b * t;
-}
-
 static inline double min(double a, double b)
 {
-	return mix(a, b, (double)(a > b));
+	return (a > b) ? b : a;
 }
 
 static inline double max(double a, double b)
 {
-	return mix(a, b, (double)(a < b));
+	return (a > b) ? a : b;
 }
 
 static inline double clamp(double giventerm, double givenmin, double givenmax)
-{ 
+{
 	giventerm = min(giventerm, givenmax);
 	giventerm = max(giventerm, givenmin);
 
@@ -50,9 +46,12 @@ union vec3
 	vec3(double givenVal){ x = givenVal; y = givenVal; z = givenVal; }
 
 	vec3 operator -(vec3 b){ return vec3(x - b.x, y - b.y, z - b.z); }
+	vec3 operator -(const vec3 b) const { return vec3(x - b.x, y - b.y, z - b.z); }
 	vec3 operator +(vec3 b){ return vec3(x + b.x, y + b.y, z + b.z); }
 	vec3 operator /(double b){ return vec3(x / b, y / b, z / b); }
+	vec3 operator /(const double b) const { return vec3(x / b, y / b, z / b); }
 	vec3 operator *(double b){ return vec3(x * b, y * b, z * b); }
+	vec3 operator *(const double b) const { return vec3(x * b, y * b, z * b); }
 	void operator /=(double b){ x /= b; y /= b; z /= b; }
 	void operator *=(double b){ x *= b; y *= b; z *= b; }
 	void operator +=(vec3 b){ x += b.x; y += b.y; z += b.z; }
@@ -66,16 +65,6 @@ union vec3
 static inline vec3 clamp(vec3 giventerm, double givenmin, double givenmax)
 {
 	return vec3(clamp(giventerm.x, givenmin, givenmax), clamp(giventerm.y, givenmin, givenmax), clamp(giventerm.z, givenmin, givenmax));
-}
-
-static inline vec3 mix(vec3 a, vec3 b, double t)
-{
-	return vec3
-	(
-		mix(a.x, b.x, t),
-		mix(a.y, b.y, t),
-		mix(a.z, b.z, t)
-	);
 }
 
 static inline vec3 reflect(vec3 incident, vec3 normal)
@@ -109,11 +98,6 @@ struct material
 	material(double givenDiff, double givenSpec, double givenGloss, double givenReflect, double givenOpac, double givenRefract) : diff(givenDiff), spec(givenSpec), gloss(givenGloss), reflect(givenReflect), opac(givenOpac), refract(givenRefract){}
 };
 
-static inline material mix(material a, material b, double t)
-{
-	return material(mix(a.diff, b.diff, t), mix(a.spec, b.spec, t), mix(a.gloss, b.gloss, t), mix(a.reflect, b.reflect, t), mix(a.opac, b.opac, t), mix(a.refract, b.refract, t));
-}
-
 //one-color sphere
 struct sphere
 {
@@ -121,7 +105,7 @@ struct sphere
 	vec3 color;
 	double radius;
 	material mat;
-	
+
 	sphere(vec3 givenOrigin, vec3 givenColor, double givenRadius, material givenMaterial) : origin(givenOrigin), color(givenColor), radius(givenRadius), mat(givenMaterial){}
 };
 
@@ -161,17 +145,6 @@ struct intersection
 
 const intersection intersection::MISS = intersection(RENDER_DISTANCE, vec3(22.0), vec3(.0), material(.0));
 
-static inline intersection mix(intersection a, intersection b, double t)
-{
-	return intersection
-	(
-		mix(a.dist, b.dist, t),
-		mix(a.color, b.color, t),
-		mix(a.normal, b.normal, t),
-		mix(a.mat, b.mat, t)
-	);
-}
-
 #pragma endregion
 
 #pragma region RAYTRACING
@@ -181,7 +154,7 @@ const unsigned int lightCount = 2;
 const double ambientLight = .01;
 const unsigned int maxBounces = 4;
 
-static inline double rayTrace(ray &pRay, sphere &pSphere)
+static inline double rayTrace(const ray &pRay, const sphere &pSphere)
 {
 	double radius2 = pSphere.radius*pSphere.radius;
 	vec3 L = pSphere.origin - pRay.origin;
@@ -194,20 +167,33 @@ static inline double rayTrace(ray &pRay, sphere &pSphere)
 	return min(t0, t1);
 }
 
-static inline intersection intersect(ray &pRay, sphere &pSphere)
+static inline intersection intersect(ray &pRay, const sphere &pSphere)
 {
 	double t = rayTrace(pRay, pSphere);
 	intersection hit = intersection(t, pSphere.color, (pSphere.origin - (pRay.origin + pRay.direction*t)) / pSphere.radius, pSphere.mat);
-	return mix(intersection::MISS, hit, (double)(t > SMALLEST_DISTANCE));
+	if (t > SMALLEST_DISTANCE) return hit;
+	return intersection::MISS;
 }
 
-static inline bool isInShadow(ray &pRay, sphere &pSphere, vec3 &lightPos, double minDistance)
+static inline vec3 calcLighting(const ray &pRay, const vec3 &intersectionPoint, const pointLight &pLight, const intersection &pIntersection)
 {
-	double t = rayTrace(pRay, pSphere);
+	const vec3 lightDir = intersectionPoint - pLight.origin;
+	const double lightDistance = vec3::magnitude(lightDir);
+	const double lightIntensity = pLight.intensity / (lightDistance*lightDistance);
+	const double diffuseTerm = clamp(vec3::dot(lightDir / lightDistance, pIntersection.normal), .0, 1.0) * pIntersection.mat.diff;
+	const vec3 reflection = reflect(lightDir, pIntersection.normal);
+	const double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), pRay.direction), .0, 1.0), pIntersection.mat.gloss) * pIntersection.mat.spec;
+ 
+	return pIntersection.color * lightIntensity * (diffuseTerm + specularTerm + ambientLight);
+}
+
+static inline bool isInShadow(const ray &pRay, const sphere &pSphere, const vec3 &lightPos, const double minDistance)
+{
+	const double t = rayTrace(pRay, pSphere);
 	return (t > minDistance) && (t < vec3::magnitude(lightPos - pRay.origin));
 }
 
-static inline intersection bounce(ray &pRay, vec3 &outColor, pointLight *pLights, sphere *pSpheres)
+static inline intersection bounce(ray &pRay, vec3 &outColor, const pointLight *pLights, const sphere *pSpheres)
 {
 	vec3 finalColor = vec3(.0);
 	intersection finalIntersection = intersection::MISS;
@@ -215,57 +201,44 @@ static inline intersection bounce(ray &pRay, vec3 &outColor, pointLight *pLights
 	for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
 	{
 		intersection currentIntersection = intersect(pRay, pSpheres[sphereIndex]);
-		finalIntersection = mix(finalIntersection, currentIntersection, (double)(currentIntersection.dist < finalIntersection.dist));
+		if (currentIntersection.dist < finalIntersection.dist) finalIntersection = currentIntersection;
 	}
 	vec3 intersectionPoint = pRay.origin + pRay.direction * finalIntersection.dist;
 
 	for (unsigned int lightIndex = 0; lightIndex < lightCount; lightIndex++)
 	{
-		
-		vec3 lightDir = intersectionPoint - pLights[lightIndex].origin;
-		double lightDistance = vec3::magnitude(lightDir);
-		double lightIntensity = pLights[lightIndex].intensity / (lightDistance*lightDistance);
-		double diffuseTerm = clamp(vec3::dot(lightDir / lightDistance, finalIntersection.normal), .0, 1.0) * finalIntersection.mat.diff;
-
-
-		vec3 reflection = reflect(lightDir, finalIntersection.normal);
-		//specular term
-		//Thanks to UglySwedishFish#3207 on discord for their help with this :
-		//dot products range from -1 to 1, so the dot product of the reflection and the ray's direction
-		//has to be clamped so that a negative value doesn't get squared into a positive value
-		const double specularTerm = pow(clamp(vec3::dot(vec3::normalize(reflection), pRay.direction), .0, 1.0), finalIntersection.mat.gloss) * finalIntersection.mat.spec;
-
 		bool inShadow = false;
 		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
 		{
 			ray shadowRay = ray(intersectionPoint, vec3::normalize(pLights[lightIndex].origin - intersectionPoint));
 			inShadow = inShadow || isInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin, .00001);
 		}
-		finalColor += finalIntersection.color * lightIntensity * ((diffuseTerm + specularTerm)*(double)(!inShadow) + ambientLight);
+		if (inShadow) continue;
+		finalColor += calcLighting(pRay, intersectionPoint, pLights[lightIndex], finalIntersection);
 	}
 
 	finalColor = clamp(finalColor, .0, 255.0);
 	//add background color
-	finalColor = mix(finalColor, intersection::MISS.color, (finalIntersection.dist == intersection::MISS.dist));
+	if (finalIntersection.dist == intersection::MISS.dist) finalColor = intersection::MISS.color;
 	outColor = finalColor;
 	pRay.origin = pRay.origin + pRay.direction * finalIntersection.dist;
 	pRay.direction = reflect(pRay.direction, finalIntersection.normal);
 	return finalIntersection;
 }
 
-static inline vec3 traceScene(ray pRay, pointLight *pLights, sphere *pSpheres)
+static inline vec3 traceScene(ray &pRay, const pointLight *pLights, const sphere *pSpheres)
 {
 	vec3 finalColor = vec3(.0);
 	double reflectance = 1.0;
 	bool bounceMissed = false;
 	unsigned int bounceIndex = 1;
-	while (!bounceMissed && bounceIndex <= maxBounces)
+
+	while ((!bounceMissed && bounceIndex <= maxBounces && reflectance > .0))
 	{
 		vec3 bounceColor = vec3(.0);
 		intersection bounceIntersection = bounce(pRay, bounceColor, pLights, pSpheres);
 		bounceColor *= reflectance;
 		finalColor += clamp(bounceColor, .0, 255.0);
-
 		reflectance -= 1.0 - bounceIntersection.mat.reflect;
 		bounceIndex++;
 		bounceMissed = bounceMissed || (bounceIntersection.dist == intersection::MISS.dist);
@@ -365,28 +338,45 @@ Win32DefaultProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
 
 #pragma endregion
 
-
-int CALLBACK
-WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCode) {
-	const char* window_title = "MinimalWindowPixelOnScreen";
-
-	sphere spheres[sphereCount]
+static inline void renderPixels(RenderTarget &rt, double xStart, double threadWidth, double yStart, double threadHeight, double width, double height)
+{
+	const sphere spheres[sphereCount]
 	{
 		sphere(vec3(.0, .5, 2.0),		vec3(255.0, 255.0, 255.0),	.4,	material(.4, .6, 64.0, .3, 1.0, 1.0)),
-		sphere(vec3(-.3, -.4, 2.1),		vec3(255.0, .0, 255.0),		.3,	material(1., .0, 8.0, 1.0, 1.0, 1.0)),
-		sphere(vec3(.3, -.4,2.1),		vec3(20.0, 200.0, 20.0),	.3,	material(.9, .1, 8.0, 1.0, 1.0, 1.0))
+		sphere(vec3(-.3, -.4, 2.1),		vec3(255.0, .0, 255.0),		.3,	material(1., .0, 8.0, .2, 1.0, 1.0)),
+		sphere(vec3(.3, -.4,2.1),		vec3(20.0, 200.0, 20.0),	.3,	material(.9, .1, 8.0, .9, 1.0, 1.0))
 	};
 
-	pointLight lights[lightCount]
+	const pointLight lights[lightCount]
 	{
 		pointLight(vec3(1.0, .0, .0), 1.5),
 		pointLight(vec3(1.0, .0,1.0), 1.0)
 	};
 
+	for (double y = yStart; y < yStart + threadWidth; y += 1.0)
+	{
+		for (double x = xStart; x < xStart + threadHeight; x += 1.0)
+		{
+			const double u = -.5 + x / width;
+			const double v = -.5 + y / height;
+
+			//send ray through the scene
+			ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u, v, 1.0)));
+
+			vec3 col = traceScene(currentRay, lights, spheres);
+
+			rt.pixel(x, y, make_color(col.r, col.g, col.b, 0xff));
+		}
+	}
+}
+
+
+int CALLBACK
+WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCode) {
+	const char* window_title = "MinimalWindowPixelOnScreen";
 
 	const int window_width = 1024;
 	const int window_height = 1024;
-
 
 	WNDCLASSEXA wc = {};
 	wc.cbSize = sizeof(wc);
@@ -408,7 +398,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 	HDC device = GetDC(window_handle);
 	RenderTarget rendertarget(device, window_width, window_height);
 	auto prev = get_ticks64();
-	while (true) 
+	while (true)
 	{
 		MSG msg = {};
 		while (PeekMessage(&msg, 0, 0, 0, PM_REMOVE)) {
@@ -430,23 +420,23 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 		}
 
 		//for every pixel
-		const double width = (double)window_width;
-		const double height = (double)window_height;
-		for (double y = 0.0; y < height; y+=1.0)
-		{
-			for (double x = 0; x < width; x+=1.0)
-			{
-				const double u = -.5 + x / width;
-				const double v = -.5 + y / height;
+		static const double width = (double)window_width;
+		static const double height = (double)window_height;
 
-				//send ray through the scene
-				ray currentRay(vec3(u, v, .0), vec3::normalize(vec3(u, v, 1.0)));
+		static const unsigned int threadAmount = 4;
+		static const double threadWidth = width / threadAmount * 2;
+		static const double threadHeight = height / threadAmount * 2;
 
-				vec3 col = traceScene(currentRay, lights, spheres);
-				
-				rendertarget.pixel(x, y, make_color(col.r, col.g, col.b, 0xff));
-			}
-		}
+		std::thread t1(renderPixels, std::ref(rendertarget), .0, threadWidth, .0, threadHeight, width, height);
+		std::thread t2(renderPixels, std::ref(rendertarget), threadWidth, threadWidth, .0, threadHeight, width, height);
+		std::thread t3(renderPixels, std::ref(rendertarget), .0, threadWidth, threadHeight, threadHeight, width, height);
+		std::thread t4(renderPixels, std::ref(rendertarget), threadWidth, threadWidth, threadHeight, threadHeight, width, height);
+
+		t1.join();
+		t2.join();
+		t3.join();
+		t4.join();
+
 		rendertarget.present();
 	}
 
