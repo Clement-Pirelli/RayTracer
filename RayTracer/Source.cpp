@@ -2,7 +2,7 @@
 #include <thread>
 
 //CONSTANTS
-constexpr double RENDER_DISTANCE = 9999.0;
+constexpr double RENDER_DISTANCE = 999.0;
 constexpr double SMALLEST_DISTANCE = .0001;
 
 #pragma region SCALAR OPERATIONS
@@ -20,6 +20,11 @@ static inline double max(const double a, const double b)
 static inline double clamp(const double giventerm, const double givenmin, const double givenmax)
 {
 	return min(max(giventerm, givenmin), givenmax);
+}
+
+static inline double mix(const double a, const double b, const double t)
+{
+	return a * (1. - t) + b*t;
 }
 
 #pragma endregion
@@ -46,6 +51,7 @@ union vec3
 	vec3 operator +(vec3 b) const { return vec3(x + b.x, y + b.y, z + b.z); }
 	vec3 operator /(double b) const { return vec3(x / b, y / b, z / b); }
 	vec3 operator *(double b) const { return vec3(x * b, y * b, z * b); }
+	vec3 operator *(vec3 b) const { return vec3(x * b.x, y * b.y, z * b.z); }
 	void operator /=(double b){ x /= b; y /= b; z /= b; }
 	void operator *=(double b){ x *= b; y *= b; z *= b; }
 	void operator +=(vec3 b){ x += b.x; y += b.y; z += b.z; }
@@ -63,7 +69,14 @@ inline vec3 clamp(const vec3 &giventerm, const double givenmin, const double giv
 
 inline vec3 reflect(const vec3 &incident, const vec3 &normal)
 {
-	return vec3::normalize(normal * 2.0 * vec3::dot(normal, incident) - incident);
+	const vec3 I = vec3::normalize(incident);
+
+	return (normal * 2.0 * vec3::dot(normal, I)) - I;
+}
+
+inline vec3 mix(const vec3 &a, const vec3 &b, double t)
+{
+	return vec3(mix(a.x,b.x,t), mix(a.y,b.y,t), mix(a.z,b.z,t));
 }
 
 #pragma endregion
@@ -152,23 +165,22 @@ vec3 cameraDirection(.0,.0,1.0);
 
 static inline double rayTrace(const ray &pRay, const sphere &pSphere)
 {
-	double radius2 = pSphere.radius*pSphere.radius;
-	vec3 L = pSphere.origin - pRay.origin;
-	double tca = vec3::dot(L, pRay.direction);
-	double d2 = vec3::dot(L, L) - tca * tca;
+	const double radius2 = pSphere.radius*pSphere.radius;
+	const vec3 L = pSphere.origin - pRay.origin;
+	const double tca = vec3::dot(L, pRay.direction);
+	const double d2 = vec3::dot(L, L) - tca * tca;
 	if (d2 > radius2) return intersection::MISS.dist;
-	double thc = sqrt(radius2 - d2);
-	double t0 = tca - thc;
-	double t1 = tca + thc;
+	const double thc = sqrt(radius2 - d2);
+	const double t0 = tca - thc;
+	const double t1 = tca + thc;
 	return min(t0, t1);
 }
 
 static inline intersection intersect(const ray &pRay, const sphere &pSphere)
 {
 	double t = rayTrace(pRay, pSphere);
-	intersection hit = intersection(t, pSphere.color, (pSphere.origin - (pRay.origin + pRay.direction*t)) / pSphere.radius, pSphere.mat);
-	if (t > SMALLEST_DISTANCE) return hit;
-	return intersection::MISS;
+	if (t < SMALLEST_DISTANCE) return intersection::MISS;
+	return intersection(t, pSphere.color, (pSphere.origin - (pRay.origin + pRay.direction*t)) / pSphere.radius, pSphere.mat);
 }
 
 static inline vec3 calcLighting(const ray &pRay, const vec3 &intersectionPoint, const pointLight &pLight, const intersection &pIntersection)
@@ -176,10 +188,11 @@ static inline vec3 calcLighting(const ray &pRay, const vec3 &intersectionPoint, 
 	const vec3 lightDir = intersectionPoint - pLight.origin;
 	const double lightDistance = vec3::magnitude(lightDir);
 	const double lightIntensity = pLight.intensity / (lightDistance*lightDistance);
-	const double diffuseTerm = clamp(vec3::dot(lightDir / lightDistance, pIntersection.normal), .0, 1.0) * pIntersection.mat.diff;
+	const double diffuseTerm = clamp(vec3::dot(lightDir/lightDistance, pIntersection.normal), .0, 1.0) * pIntersection.mat.diff;
 	const vec3 reflection = reflect(lightDir, pIntersection.normal);
-	const double specularTerm = pow(clamp(vec3::dot(reflection,cameraDirection), .0, 1.0), pIntersection.mat.gloss) * pIntersection.mat.spec;
- 
+	const double specularTerm = pow(clamp(vec3::dot(reflection, cameraDirection), .0, 1.0), pIntersection.mat.gloss) * pIntersection.mat.spec;
+
+
 	return pIntersection.color * lightIntensity * (diffuseTerm + specularTerm + ambientLight);
 }
 
@@ -199,6 +212,9 @@ static inline intersection bounce(const ray &pRay, vec3 &outColor, const pointLi
 		intersection currentIntersection = intersect(pRay, pSpheres[sphereIndex]);
 		if (currentIntersection.dist < finalIntersection.dist) finalIntersection = currentIntersection;
 	}
+	
+	if (finalIntersection.dist == intersection::MISS.dist) return intersection::MISS;
+
 	vec3 intersectionPoint = pRay.origin + pRay.direction * finalIntersection.dist;
 
 	for (unsigned int lightIndex = 0; lightIndex < lightCount; lightIndex++)
@@ -207,40 +223,36 @@ static inline intersection bounce(const ray &pRay, vec3 &outColor, const pointLi
 		for (unsigned int sphereIndex = 0; sphereIndex < sphereCount; sphereIndex++)
 		{
 			ray shadowRay = ray(intersectionPoint, vec3::normalize(pLights[lightIndex].origin - intersectionPoint));
-			inShadow = inShadow || isInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin, .00001);
+			shadowRay.origin += finalIntersection.normal*SMALLEST_DISTANCE;
+			inShadow = isInShadow(shadowRay, pSpheres[sphereIndex], pLights[lightIndex].origin, .00001);
 			if (inShadow) break;
 		}
 		if(!inShadow)
 			finalColor += calcLighting(pRay, intersectionPoint, pLights[lightIndex], finalIntersection);
 	}
 
-	finalColor = clamp(finalColor, .0, 255.0);
-	//add background color
-	if (finalIntersection.dist == intersection::MISS.dist) finalColor = intersection::MISS.color;
-	outColor = finalColor;
+	outColor = clamp(finalColor, .0, 255.0);
 	return finalIntersection;
 }
 
-static inline vec3 traceScene(const ray &pRay, const pointLight *pLights, const sphere *pSpheres)
+inline vec3 traceScene(const ray &pRay, const pointLight *pLights, const sphere *pSpheres)
 {
-	vec3 finalColor = vec3(.0);
+	vec3 finalColor = intersection::MISS.color;
 	double reflectance = 1.0;
-	bool bounceMissed = false;
 	unsigned int bounceIndex = 1;
 	ray currentRay = pRay;
 
-	while ((!bounceMissed && bounceIndex <= maxBounces && reflectance > .0))
+	while (bounceIndex <= maxBounces && reflectance > .01)
 	{
 		vec3 bounceColor = vec3(.0);
-		intersection bounceIntersection = bounce(pRay, bounceColor, pLights, pSpheres);
+		intersection bounceIntersection = bounce(currentRay, bounceColor, pLights, pSpheres);
+		if (bounceIntersection.dist == intersection::MISS.dist) return finalColor;
 		currentRay.origin = currentRay.origin + currentRay.direction * bounceIntersection.dist;
-		currentRay.direction = reflect(currentRay.direction, bounceIntersection.normal);
-		currentRay.origin += currentRay.direction * SMALLEST_DISTANCE;
-		bounceColor *= reflectance;
-		finalColor += clamp(bounceColor, .0, 255.0);
+		currentRay.direction = reflect(currentRay.direction, bounceIntersection.normal)*-1.0;
+		finalColor += bounceColor*reflectance;
+		currentRay.origin += currentRay.direction*SMALLEST_DISTANCE;
 		reflectance -= 1.0 - bounceIntersection.mat.reflect;
 		bounceIndex++;
-		bounceMissed = bounceMissed || (bounceIntersection.dist == intersection::MISS.dist);
 	}
 	return clamp(finalColor, .0, 255.0);
 }
@@ -337,22 +349,21 @@ Win32DefaultProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
 
 #pragma endregion
 
-
 double currentTime = .0;
 
 static inline void renderPixels(RenderTarget &rt, double xStart, double threadWidth, double yStart, double threadHeight, double width, double height)
 {
 	sphere spheres[sphereCount]
 	{
-		sphere(vec3(cos(currentTime)*.2, -.2, 1.0),	vec3(255.0, 255.0, 255.0),	.1,	material(1., .0, 64.0, .3, 1.0, 1.0)),
-		sphere(vec3(-.3, -.4, 2.5),		vec3(255.0, .0, 255.0),		.3,	material(1.0, 1.0, 32.0, .2, 1.0, 1.0)),
-		sphere(vec3(.3, -.4,2.1),		vec3(20.0, 200.0, 20.0),	.3,	material(1., .0, 8.0, 1.0, 1.0, 1.0))
+		sphere(vec3(.2, cos(currentTime)*-.2, 1.0),	vec3(255.0, 255.0, 255.0),	.1,	material(1., .0, 64.0, 1.0, 1.0, 1.0)),
+		sphere(vec3(-.3, -.4, 2.5-cos(currentTime)),vec3(255.0, .0, 255.0),		.2,	material(1.0, 1.0, 32.0, 1.0, 1.0, 1.0)),
+		sphere(vec3(.3, -.4,2.1),					vec3(255.0, .0, .0),		.3,	material(1., .0, 8.0, 1.0, 1.0, 1.0))
 	};
 
 	pointLight lights[lightCount]
 	{
-		pointLight(vec3(sin(currentTime), cos(currentTime), -.7), 1.0),
-		pointLight(vec3(-.0, .0,-.4), 1.0)
+		pointLight(vec3(-.6, .0, -.7), .7),
+		pointLight(vec3(.0, .0,-.4), 1.0)
 	};
 
 	for (double y = yStart; y < yStart + threadWidth; y += 1.0)
@@ -374,7 +385,7 @@ static inline void renderPixels(RenderTarget &rt, double xStart, double threadWi
 
 int CALLBACK
 WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCode) {
-	const char* window_title = "MinimalWindowPixelOnScreen";
+	const char* window_title = "Raytracer!";
 
 	const int window_width = 1024;
 	const int window_height = 1024;
