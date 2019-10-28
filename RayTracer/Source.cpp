@@ -47,11 +47,11 @@ union vec3
 	vec3(double givenX, double givenY, double givenZ) : x(givenX), y(givenY), z(givenZ){}
 	vec3(double givenVal){ x = givenVal; y = givenVal; z = givenVal; }
 
-	vec3 operator -(vec3 b) const { return vec3(x - b.x, y - b.y, z - b.z); }
-	vec3 operator +(vec3 b) const { return vec3(x + b.x, y + b.y, z + b.z); }
-	vec3 operator /(double b) const { return vec3(x / b, y / b, z / b); }
-	vec3 operator *(double b) const { return vec3(x * b, y * b, z * b); }
-	vec3 operator *(vec3 b) const { return vec3(x * b.x, y * b.y, z * b.z); }
+	vec3 operator -(vec3 b) const { return {x - b.x, y - b.y, z - b.z}; }
+	vec3 operator +(vec3 b) const { return {x + b.x, y + b.y, z + b.z}; }
+	vec3 operator /(double b) const { return {x / b, y / b, z / b}; }
+	vec3 operator *(double b) const { return {x * b, y * b, z * b}; }
+	vec3 operator *(vec3 b) const { return { x * b.x, y * b.y, z * b.z }; }
 	void operator /=(double b){ x /= b; y /= b; z /= b; }
 	void operator *=(double b){ x *= b; y *= b; z *= b; }
 	void operator +=(vec3 b){ x += b.x; y += b.y; z += b.z; }
@@ -72,11 +72,6 @@ inline vec3 reflect(const vec3 &incident, const vec3 &normal)
 	const vec3 I = vec3::normalize(incident);
 
 	return (normal * 2.0 * vec3::dot(normal, I)) - I;
-}
-
-inline vec3 mix(const vec3 &a, const vec3 &b, double t)
-{
-	return vec3(mix(a.x,b.x,t), mix(a.y,b.y,t), mix(a.z,b.z,t));
 }
 
 #pragma endregion
@@ -171,12 +166,10 @@ static inline double rayTrace(const ray &pRay, const sphere &pSphere)
 	const double d2 = vec3::dot(L, L) - tca * tca;
 	if (d2 > radius2) return intersection::MISS.dist;
 	const double thc = sqrt(radius2 - d2);
-	const double t0 = tca - thc;
-	const double t1 = tca + thc;
-	return min(t0, t1);
+	return min(tca - thc, tca + thc);
 }
 
-static inline intersection intersect(const ray &pRay, const sphere &pSphere)
+static intersection intersect(const ray &pRay, const sphere &pSphere)
 {
 	double t = rayTrace(pRay, pSphere);
 	if (t < SMALLEST_DISTANCE) return intersection::MISS;
@@ -353,17 +346,17 @@ double currentTime = .0;
 
 static inline void renderPixels(RenderTarget &rt, double xStart, double threadWidth, double yStart, double threadHeight, double width, double height)
 {
-	sphere spheres[sphereCount]
+	const sphere spheres[sphereCount]
 	{
-		sphere(vec3(.2, cos(currentTime)*-.2, 1.0),	vec3(255.0, 255.0, 255.0),	.1,	material(1., .0, 64.0, 1.0, 1.0, 1.0)),
-		sphere(vec3(-.3, -.4, 2.5-cos(currentTime)),vec3(255.0, .0, 255.0),		.2,	material(1.0, 1.0, 32.0, 1.0, 1.0, 1.0)),
-		sphere(vec3(.3, -.4,2.1),					vec3(255.0, .0, .0),		.3,	material(1., .0, 8.0, 1.0, 1.0, 1.0))
+		sphere({.2, cos(currentTime)*-.2, 1.0},		{255.0, 255.0, 255.0},	.1,	material(1.0, .0, 1.0, .2, 1.0, 1.0)),
+		sphere({-.3, -.4, 2.5 - cos(currentTime)},	{255.0, .0, 255.0},		.2,	material(1.0, 1.0, 128.0, .5, 1.0, 1.0)),
+		sphere({.3, -.4,2.1},						{255.0, .0, .0},		.3,	material(1., 1.0, 64.0, .5, 1.0, 1.0))
 	};
 
-	pointLight lights[lightCount]
+	const pointLight lights[lightCount]
 	{
-		pointLight(vec3(-.6, .0, -.7), .7),
-		pointLight(vec3(.0, .0,-.4), 1.0)
+		pointLight({-.6, .0, -.7}, .7),
+		pointLight({.0, .0,-.4}, 1.0)
 	};
 
 	for (double y = yStart; y < yStart + threadWidth; y += 1.0)
@@ -372,23 +365,33 @@ static inline void renderPixels(RenderTarget &rt, double xStart, double threadWi
 		{
 			const double u = -.5 + x / width;
 			const double v = -.5 + y / height;
-			vec3 dir = vec3::normalize(vec3(cameraDirection.x+u, cameraDirection.y+v, cameraDirection.z));
+			vec3 dir = vec3::normalize({ cameraDirection.x + u, cameraDirection.y + v, cameraDirection.z });
 			//send ray through the scene
 			ray currentRay(cameraPosition , dir);
 
-			vec3 col = traceScene(currentRay, lights, spheres);
+			vec3 col = clamp(traceScene(currentRay, lights, spheres),.0,255.0);
 			rt.pixel(x, y, make_color(col.r, col.g, col.b, 0xff));
 		}
 	}
 }
+
+const int window_width = 1024;
+const int window_height = 1024;
+const double width = (double)window_width;
+const double height = (double)window_height;
+
+const unsigned int threadX = 3;
+const unsigned int threadY = 3;
+std::thread threads[threadX * threadY];
+const double threadWidth = width / threadX;
+const double threadHeight = height / threadY;
 
 
 int CALLBACK
 WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCode) {
 	const char* window_title = "Raytracer!";
 
-	const int window_width = 1024;
-	const int window_height = 1024;
+	
 
 	WNDCLASSEXA wc = {};
 	wc.cbSize = sizeof(wc);
@@ -427,29 +430,27 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShow
 			prev = curr;
 
 			char title[256] = {};
-			sprintf_s(title, sizeof(title), "%s [%dus]", window_title, (int)(diff));
+			sprintf_s(title, sizeof(title), "%s [%dms]", window_title, (int)(diff/1000));
 			SetWindowTextA(window_handle, title);
 		}
 
 		//for every pixel
-		const double width = (double)window_width;
-		const double height = (double)window_height;
-
-		const unsigned int threadAmount = 4;
-		const double threadWidth = width / threadAmount * 2;
-		const double threadHeight = height / threadAmount * 2;
+		
 
 		currentTime = (double)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()*.001;
 
-		std::thread t1(renderPixels, std::ref(rendertarget), .0, threadWidth, .0, threadHeight, width, height);
-		std::thread t2(renderPixels, std::ref(rendertarget), threadWidth, threadWidth, .0, threadHeight, width, height);
-		std::thread t3(renderPixels, std::ref(rendertarget), .0, threadWidth, threadHeight, threadHeight, width, height);
-		std::thread t4(renderPixels, std::ref(rendertarget), threadWidth, threadWidth, threadHeight, threadHeight, width, height);
+		for (int i = 0; i < threadY; i++)
+		{
+			for(int j = 0; j < threadX; j++)
+			{
+				new (threads + (i*threadX + j)) std::thread(renderPixels, std::ref(rendertarget), threadWidth*(double)j, threadWidth, threadHeight*(double)i, threadHeight, width, height);
+			}
+		}
 
-		t1.join();
-		t2.join();
-		t3.join();
-		t4.join();
+		for(int i = 0; i < threadX*threadY; i++)
+		{
+			threads[i].join();
+		}
 
 		rendertarget.present();
 	}
