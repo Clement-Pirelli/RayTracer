@@ -1,6 +1,3 @@
 # RayTracer
 
-Simple C++ raytracer based on [Ray Tracing in One Weekend](https://www.realtimerendering.com/raytracing/Ray%20Tracing%20in%20a%20Weekend.pdf) by Peter Shirley.
-Can load .obj files.
-
-Targets Windows
+Simple somewhat real-time C++ raytracer targeting windows. Click [here](https://github.com/Clement-Pirelli/ROIW_based-Raytracer/tree/master) to see a more recent raytracing project of mine.
